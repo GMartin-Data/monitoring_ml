@@ -1,13 +1,11 @@
-from datetime import datetime, timezone
-from enum import Enum
 from logging import getLogger
-from typing import Any
 
 from fastapi import FastAPI, HTTPException, status
 import pandas as pd
-from pydantic import BaseModel, Field, validator
 
-from model_utils import load_model, predict
+from .database import DatabaseManager
+from .models import FeaturesInput, PredictionOutput
+from .utils import load_model, predict
 
 
 # Instanciate logger
@@ -24,100 +22,14 @@ app = FastAPI(
         - sex
     It uses a machine learning model trained on the Palmer Penguins dataset.
     🌐 Documentation link: https://github.com/allisonhorst/palmerpenguins
+    The records are then stored in a SQLite database.
     """,
     version="1.0.0",
 )
 
 
-# Enum classes for data validation and OpenAPI documentation
-class Island(str, Enum):
-    TORGERSEN = "Torgersen"
-    BISCOE = "Biscoe"
-    DREAM = "Dream"
-
-
-class Sex(str, Enum):
-    MALE = "Male"
-    FEMALE = "Female"
-
-
-class Species(str, Enum):
-    ADELIE = "Adelie"
-    CHINSTRAP = "Chinstrap"
-    GENTOO = "Gentoo"
-
-
-class FeaturesInput(BaseModel):
-    """
-    Input features for penguin species prediction.
-    All measures must be positive numbers.
-    """
-
-    island: Island = Field(..., description="The island where the penguin was observed")
-    bill_length_mm: float = Field(
-        ...,
-        gt=0,
-        le=100,  # Determine it with sample data
-        description="Bill length in millimeters",
-    )
-    bill_depth_mm: float = Field(
-        ...,
-        gt=0,
-        le=50,  # Determine it with sample data
-        description="Bill depth in millimeters",
-    )
-    flipper_length_mm: float = Field(
-        ...,
-        gt=0,
-        le=500,  # Determine it with sample data
-        description="Flipper length in millimeters",
-    )
-    body_mass_g: float = Field(
-        ...,
-        gt=0,
-        le=10_000,  # Determine it with sample data
-        description="Body mass in grams",
-    )
-    sex: Sex = Field(..., description="Sex of the penguin")
-
-    # ⚠️ REWORK WHAT FOLLOWS TO Pydantic V2
-    @validator("*")
-    def check_nan_none(cls, v: Any) -> Any:
-        """Validate that no field is NaN or None."""
-        if pd.isna(v) or v is None:
-            raise ValueError("Field cannot be NaN or None")
-        return v
-
-    class Config:
-        schema_extra = {
-            "example": {
-                "island": "Biscoe",
-                "bill_length_mm": 45.2,
-                "bill_depth_mm": 15.5,
-                "flipper_length_mm": 198,
-                "body_mass_g": 4500,
-                "sex": "Male",
-            }
-        }
-
-
-class PredictionOutput(BaseModel):
-    """
-    Prediction output containing:
-        - the predicted penguin species
-        - an auto-generated timestamp
-    """
-
-    species: Species = Field(..., description="Predicted penguin species")
-    timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
-        description="Timestamp of the prediction",
-    )
-
-    class Config:
-        schema_extra = {
-            "example": {"species": "Gentoo", "timestamp": "2025-01-22T10:00:00.000Z"}
-        }
+# Initialize database manager
+db = DatabaseManager()
 
 
 # API Endpoints
@@ -125,14 +37,15 @@ class PredictionOutput(BaseModel):
 ## Startup event to load model
 @app.on_event("startup")
 async def startup_event():
-    """Load the model when the API starts."""
+    """Initialize the application."""
     global model
     try:
         logger.info("⏳ Starting application initialization...")
+        db.create_db_and_tables()
         model = load_model()
-        logger.info("✅ Model successfully loaded!")
+        logger.info("✅ Application startup completed successfully!")
     except Exception as e:
-        logger.error("❌ Application startup failed")
+        logger.error(f"❌ Application startup failed: {str(e)}")
         raise RuntimeError("⚠️ Failed to initialize application!")
 
 
@@ -164,12 +77,15 @@ async def predict_species(features_input: FeaturesInput) -> PredictionOutput:
         - physical measurement
         - location data
         - sex
+    Stores input data and prediction into a SQLite database, adding a timestamp.
 
     Args:
         features_input: input data
 
     Returns:
-        predicted species and timestamp
+        PredictionOutput:
+            - species (str): the predicted species
+            - prediction_id (int): the ID of the database's record.
 
     Raises:
         HTTPException if model prediction fails
@@ -182,7 +98,12 @@ async def predict_species(features_input: FeaturesInput) -> PredictionOutput:
         # Make prediction
         y_pred = predict(model, X_input)
 
-        return PredictionOutput(species=y_pred, timestamp=datetime.now(timezone.utc))
+        # Save to database
+        record = db.save_prediction(
+            features_input=features_input.model_dump(), predicted_species=y_pred
+        )
+
+        return PredictionOutput(species=y_pred, prediction_id=record.id)
 
     except Exception as e:
         logger.error(f"❌ Prediction error: {str(e)}")
