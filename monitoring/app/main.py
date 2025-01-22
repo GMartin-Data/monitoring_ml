@@ -110,7 +110,7 @@ class PredictionOutput(BaseModel):
 
     species: Species = Field(..., description="Predicted penguin species")
     timestamp: datetime = Field(
-        default_factory=datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Timestamp of the prediction",
     )
 
@@ -128,11 +128,12 @@ async def startup_event():
     """Load the model when the API starts."""
     global model
     try:
+        logger.info("⏳ Starting application initialization...")
         model = load_model()
         logger.info("✅ Model successfully loaded!")
     except Exception as e:
-        logger.exception(f"❌ Failed to load model: {str(e)}")
-        raise RuntimeError("⚠️ Failed to load model!")
+        logger.error("❌ Application startup failed")
+        raise RuntimeError("⚠️ Failed to initialize application!")
 
 
 @app.get(
