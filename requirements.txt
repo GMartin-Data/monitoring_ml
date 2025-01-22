@@ -1,0 +1,4 @@
+evidently<2
+fastapi[standard]<2
+matplotlib<4
+seaborn<2
