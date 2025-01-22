@@ -2,3 +2,4 @@ fastapi[standard]<2
 joblib<2
 pandas<3
 prometheus-fastapi-instrumentator<8
+sqlmodel<2
